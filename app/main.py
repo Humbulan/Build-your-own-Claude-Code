@@ -4,184 +4,164 @@ import subprocess
 import pymysql
 from anthropic import Anthropic
 
-# --- 1. MariaDB Logging (Imperial Nexus) ---
-def log_to_maria_db(prompt: str, response: str, tools_used: int = 0):
+def log_to_maria_db(prompt, response, tools_used=0):
     try:
         connection = pymysql.connect(
             host="localhost",
             user="root",
-            password="",
+            password=os.environ.get("MYSQL_ROOT_PASSWORD", ""),
             database="imperial_nexus",
-            port=3306
+            port=3306,
         )
         with connection.cursor() as cursor:
-            sql = "INSERT INTO agent_logs (prompt, response, tools_used) VALUES (%s, %s, %s)"
-            cursor.execute(sql, (prompt, response, tools_used))
+            cursor.execute(
+                "INSERT INTO agent_logs (prompt, response, tools_used) VALUES (%s, %s, %s)",
+                (prompt, response, tools_used),
+            )
             connection.commit()
         connection.close()
     except Exception:
         pass
 
-# --- 2. Tool Implementations ---
-def tool_read_file(path: str) -> str:
+def tool_read_file(path):
     try:
         with open(path, "r") as f:
             return f.read()
     except Exception as e:
-        return f"Error reading file: {e}"
+        return "Error reading file: %s" % e
 
-def tool_write_file(path: str, content: str) -> str:
+def tool_write_file(path, content):
     try:
         with open(path, "w") as f:
             f.write(content)
-        return f"Successfully wrote to {path}"
+        return "Successfully wrote to %s" % path
     except Exception as e:
-        return f"Error writing file: {e}"
+        return "Error writing file: %s" % e
 
-def tool_bash(command: str) -> str:
+def tool_bash(command):
     try:
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
-        return result.stdout if result.returncode == 0 else result.stderr
+        r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+        return r.stdout if r.returncode == 0 else r.stderr
     except Exception as e:
-        return f"Execution error: {e}"
+        return "Execution error: %s" % e
 
-def tool_git_status() -> str:
+def tool_git_status():
     try:
-        result = subprocess.run(["git", "status", "-s"], capture_output=True, text=True, check=True)
-        return result.stdout or "Working tree clean."
+        r = subprocess.run(["git", "status", "-s"], capture_output=True, text=True, check=True)
+        return r.stdout or "Working tree clean."
     except Exception as e:
-        return f"Git error: {e}"
+        return "Git error: %s" % e
 
-# --- 3. Main Agent Loop ---
+def tool_web_search(query, max_results=5):
+    try:
+        import requests
+        import re
+        from urllib.parse import quote_plus
+        headers = {"User-Agent": "Mozilla/5.0 (Linux; Android 13)"}
+        url = "https://html.duckduckgo.com/html/?q=" + quote_plus(query)
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return "Search failed: HTTP %s" % r.status_code
+        blocks = re.findall(
+            r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>'
+            r'.*?<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+            r.text, re.DOTALL,
+        )
+        results = []
+        for i, (href, title, snip) in enumerate(blocks[:max_results]):
+            title = re.sub(r"<[^>]+>", "", title).strip()
+            snip = re.sub(r"<[^>]+>", "", snip).strip()
+            results.append("[%d] %s\n    URL: %s\n    %s" % (i + 1, title, href, snip))
+        return "\n\n".join(results) if results else "No results for: " + query
+    except Exception as e:
+        return "Web search error: " + str(e)
+
+SYSTEM_PROMPT = (
+    "You are the Imperial Network AI Agent, running on Termux (Android) "
+    "under a PRoot sandbox. You serve CEO Humbulani Mudau.\n\n"
+    "Project layout:\n"
+    "- Main codebase: ~/imperial_network (symlink to ~/humbu_community_nexus/imperial_network)\n"
+    "- Agent repo: ~/Build-your-own-Claude-Code\n"
+    "- MariaDB: localhost:3306, database imperial_nexus\n"
+    "- Prometheus: http://localhost:9091 (LIVE config: ~/imperial_network/prometheus.yml)\n"
+    "- Pushgateway: http://localhost:9092, Grafana: http://localhost:3001\n\n"
+    "Rules:\n"
+    "- Never delete or overwrite files without explicit confirmation.\n"
+    "- The file prometheus/prometheus.yml is NOT live. The live config is prometheus.yml at the repo root.\n"
+    "- When in doubt, ask before acting."
+)
+
+TOOLS = [
+    {"name": "read_file", "description": "Read a file",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+    {"name": "write_file", "description": "Write or overwrite a file",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+    {"name": "bash", "description": "Execute a bash command",
+     "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+    {"name": "git_status", "description": "Check git status",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "web_search", "description": "Search the web for current information",
+     "input_schema": {"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}}, "required": ["query"]}},
+]
+
+def dispatch(name, inp):
+    if name == "read_file":    return tool_read_file(inp["path"])
+    if name == "write_file":   return tool_write_file(inp["path"], inp["content"])
+    if name == "bash":         return tool_bash(inp["command"])
+    if name == "git_status":   return tool_git_status()
+    if name == "web_search":   return tool_web_search(inp["query"], inp.get("max_results", 5))
+    return "Unknown tool: %s" % name
+
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Imperial Network Claude Code Agent")
-    parser.add_argument("-p", "--prompt", required=True, help="Prompt for the agent")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-p", "--prompt", required=True)
     args = parser.parse_args()
 
-    prompt = args.prompt
-    tools_used_count = 0
-
-    # Explicitly pull from environment variables
     base_url = os.environ.get("ANTHROPIC_BASE_URL", "https://openrouter.ai/api")
-    auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
-    
-    if not auth_token:
-        print("Error: Please set the ANTHROPIC_AUTH_TOKEN environment variable.")
+    token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    if not token:
+        print("Error: ANTHROPIC_AUTH_TOKEN not set.")
         sys.exit(1)
 
-    # Initialize the client with explicit parameters for OpenRouter
-    client = Anthropic(
-        base_url=base_url,
-        api_key="",  
-        auth_token=auth_token
-    )
+    client = Anthropic(base_url=base_url, api_key="", auth_token=token)
+    messages = [{"role": "user", "content": args.prompt}]
+    used = 0
 
-    # Define available tools
-    tools = [
-        {
-            "name": "read_file",
-            "description": "Read the contents of a file",
-            "input_schema": {
-                "type": "object",
-                "properties": {"path": {"type": "string", "description": "The path to the file"}},
-                "required": ["path"]
-            }
-        },
-        {
-            "name": "write_file",
-            "description": "Create or overwrite a file with specific content",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "The path to the file"},
-                    "content": {"type": "string", "description": "The content to write"}
-                },
-                "required": ["path", "content"]
-            }
-        },
-        {
-            "name": "bash",
-            "description": "Execute a bash command",
-            "input_schema": {
-                "type": "object",
-                "properties": {"command": {"type": "string", "description": "The command to execute"}},
-                "required": ["command"]
-            }
-        },
-        {
-            "name": "git_status",
-            "description": "Check the current git status",
-            "input_schema": {"type": "object", "properties": {}}
-        }
-    ]
-
-    messages = [{"role": "user", "content": prompt}]
-    
     try:
         response = client.messages.create(
             model="qwen/qwen3.5-flash-02-23",
             max_tokens=1024,
-            tools=tools,
-            messages=messages
+            system=SYSTEM_PROMPT,
+            tools=TOOLS,
+            messages=messages,
         )
-
         while response.stop_reason == "tool_use":
-            tool_use = next(block for block in response.content if block.type == "tool_use")
-            tool_name = tool_use.name
-            tool_input = tool_use.input
-            tools_used_count += 1
-
-            if tool_name == "read_file":
-                tool_result = tool_read_file(tool_input["path"])
-            elif tool_name == "write_file":
-                tool_result = tool_write_file(tool_input["path"], tool_input["content"])
-            elif tool_name == "bash":
-                tool_result = tool_bash(tool_input["command"])
-            elif tool_name == "git_status":
-                tool_result = tool_git_status()
-            else:
-                tool_result = f"Unknown tool: {tool_name}"
-
+            tu = next(b for b in response.content if b.type == "tool_use")
+            used += 1
+            result = dispatch(tu.name, tu.input)
             messages.append({"role": "assistant", "content": response.content})
-            messages.append({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": tool_use.id,
-                    "content": tool_result
-                }]
-            })
-
+            messages.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": tu.id, "content": result}
+            ]})
             response = client.messages.create(
                 model="qwen/qwen3.5-flash-02-23",
                 max_tokens=1024,
-                tools=tools,
-                messages=messages
+                system=SYSTEM_PROMPT,
+                tools=TOOLS,
+                messages=messages,
             )
-
-        output = ""
-        for block in response.content:
-            if block.type == "text":
-                output += block.text
-        
-        # --- FIX: STRIP THE THINKING PROCESS ---
+        output = "".join(b.text for b in response.content if b.type == "text")
         if "</think>" in output:
             output = output.split("</think>")[-1].strip()
-        elif "Thinking Process:" in output:
-            output = output.split("Thinking Process:")[-1].strip()
-
     except Exception as e:
-        output = f"API Error: {e}"
+        output = "API Error: %s" % e
 
-    # Stream output live to stdout
-    for char in output:
-        sys.stdout.write(char)
+    for c in output:
+        sys.stdout.write(c)
         sys.stdout.flush()
     print()
-
-    # Log execution to MariaDB
-    log_to_maria_db(prompt, output, tools_used_count)
+    log_to_maria_db(args.prompt, output, used)
 
 if __name__ == "__main__":
     main()
