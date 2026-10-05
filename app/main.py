@@ -140,7 +140,7 @@ def main():
         for attempt in range(3):
             try:
                 return client.messages.create(
-                    model="qwen/qwen3.5-flash-02-23",
+                    model="cohere/north-mini-code:free",
                     max_tokens=1024,
                     system=SYSTEM_PROMPT,
                     tools=TOOLS,
@@ -163,7 +163,7 @@ def main():
                 {"type": "tool_result", "tool_use_id": tu.id, "content": result}
             ]})
             response = client.messages.create(
-                model="qwen/qwen3.5-flash-02-23",
+                model="cohere/north-mini-code:free",
                 max_tokens=1024,
                 system=SYSTEM_PROMPT,
                 tools=TOOLS,
