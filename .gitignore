@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .env
 README_old.md
+app/main.py.bak_*
