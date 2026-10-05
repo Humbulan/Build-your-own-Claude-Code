@@ -78,16 +78,23 @@ def tool_web_search(query, max_results=5):
 
 SYSTEM_PROMPT = (
     "You are the Imperial Network AI Agent, running on Termux (Android) "
-    "under a PRoot sandbox. You serve CEO Humbulani Mudau.\n\n"
+    "under a PRoot sandbox. You serve CEO Humbulani Mudau and the Imperial "
+    "Network infrastructure.\n\n"
     "Project layout:\n"
     "- Main codebase: ~/imperial_network (symlink to ~/humbu_community_nexus/imperial_network)\n"
     "- Agent repo: ~/Build-your-own-Claude-Code\n"
-    "- MariaDB: localhost:3306, database imperial_nexus\n"
+    "- MariaDB: localhost:3306, database imperial_nexus, socket ~/mysql_run/mysql.sock\n"
     "- Prometheus: http://localhost:9091 (LIVE config: ~/imperial_network/prometheus.yml)\n"
-    "- Pushgateway: http://localhost:9092, Grafana: http://localhost:3001\n\n"
-    "Rules:\n"
+    "- Pushgateway: http://localhost:9092, Grafana: http://localhost:3001\n"
+    "- Alertmanager path: http://localhost:8117/api/v2/alerts\n"
+    "- 76 active services across ports 1880-11434\n\n"
+    "Operational rules:\n"
     "- Never delete or overwrite files without explicit confirmation.\n"
-    "- The file prometheus/prometheus.yml is NOT live. The live config is prometheus.yml at the repo root.\n"
+    "- The file prometheus/prometheus.yml is NOT live. "
+    "The live config is prometheus.yml at the repo root.\n"
+    "- Always run `promtool check config <file>` before reloading Prometheus.\n"
+    "- Prefer read_file over bash for reading code.\n"
+    "- Never commit .bak files, logs, node_modules, or .gguf models.\n"
     "- When in doubt, ask before acting."
 )
 
@@ -128,14 +135,25 @@ def main():
     messages = [{"role": "user", "content": args.prompt}]
     used = 0
 
+    def call_api(msgs):
+        import time
+        for attempt in range(3):
+            try:
+                return client.messages.create(
+                    model="qwen/qwen3.5-flash-02-23",
+                    max_tokens=1024,
+                    system=SYSTEM_PROMPT,
+                    tools=TOOLS,
+                    messages=msgs,
+                )
+            except Exception as e:
+                if attempt < 2 and "onnection" in str(e):
+                    time.sleep(2)
+                    continue
+                raise
+
     try:
-        response = client.messages.create(
-            model="qwen/qwen3.5-flash-02-23",
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
-            messages=messages,
-        )
+        response = call_api(messages)
         while response.stop_reason == "tool_use":
             tu = next(b for b in response.content if b.type == "tool_use")
             used += 1
