@@ -114,7 +114,7 @@ TOOLS = [
 def dispatch(name, inp):
     if name == "read_file":    return tool_read_file(inp["path"])
     if name == "write_file":   return tool_write_file(inp["path"], inp["content"])
-    if name == "bash":         return tool_bash(inp["command"])
+    if name == "bash":         return tool_bash(inp.get("command") or inp.get("cmd") or inp.get("script") or "")
     if name == "git_status":   return tool_git_status()
     if name == "web_search":   return tool_web_search(inp["query"], inp.get("max_results", 5))
     return "Unknown tool: %s" % name
