@@ -4,3 +4,4 @@ __pycache__/
 .env
 README_old.md
 app/main.py.bak_*
+app/dsvw.py.bak.*

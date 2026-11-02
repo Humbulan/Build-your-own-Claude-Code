@@ -4,6 +4,9 @@ import subprocess
 import pymysql
 from anthropic import Anthropic
 
+# --- dsvw patch ---
+import dsvw
+
 def log_to_maria_db(prompt, response, tools_used=0):
     try:
         connection = pymysql.connect(
@@ -110,6 +113,12 @@ TOOLS = [
     {"name": "web_search", "description": "Search the web for current information",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}}, "required": ["query"]}},
 ]
+TOOLS = TOOLS + dsvw.TOOL_SCHEMAS
+SYSTEM_PROMPT += ("\n\nLocal training target: DSVW at "
+                  "http://127.0.0.1:65412 - use the dsvw_* tools "
+                  "for authorized testing only.\n"
+                  "DSVW include= is LFI/RFI; external URL fetch "
+                  "is blocked here - use local paths only.")  # guard:dsvw-rfi-note
 
 def dispatch(name, inp):
     if name == "read_file":    return tool_read_file(inp["path"])
@@ -117,6 +126,8 @@ def dispatch(name, inp):
     if name == "bash":         return tool_bash(inp.get("command") or inp.get("cmd") or inp.get("script") or "")
     if name == "git_status":   return tool_git_status()
     if name == "web_search":   return tool_web_search(inp["query"], inp.get("max_results", 5))
+    if name in dsvw.TOOL_NAMES:
+        return dsvw.dispatch(name, inp)
     return "Unknown tool: %s" % name
 
 def main():
