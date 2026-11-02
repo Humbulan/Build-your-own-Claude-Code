@@ -142,6 +142,11 @@ def main():
         print("Error: ANTHROPIC_AUTH_TOKEN not set.")
         sys.exit(1)
 
+    model = os.environ.get("OPENROUTER_MODEL")
+    if not model:
+        print("Error: OPENROUTER_MODEL not set (e.g. nvidia/nemotron-3-ultra-550b-a55b:free)")
+        sys.exit(1)
+
     client = Anthropic(base_url=base_url, api_key="", auth_token=token)
     messages = [{"role": "user", "content": args.prompt}]
     used = 0
@@ -151,7 +156,7 @@ def main():
         for attempt in range(3):
             try:
                 return client.messages.create(
-                    model="nvidia/nemotron-3-super-120b-a12b:free",
+                    model=model,
                     max_tokens=1024,
                     system=SYSTEM_PROMPT,
                     tools=TOOLS,
@@ -174,7 +179,7 @@ def main():
                 {"type": "tool_result", "tool_use_id": tu.id, "content": result}
             ]})
             response = client.messages.create(
-                model="nvidia/nemotron-3-super-120b-a12b:free",
+                model=model,
                 max_tokens=1024,
                 system=SYSTEM_PROMPT,
                 tools=TOOLS,
